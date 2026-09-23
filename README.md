@@ -85,8 +85,15 @@ train. Лимиты `--samples` и `--test-samples` в этом режиме н�
 и достаточно места для кэша датасета и чекпоинтов. Halo официально
 [поставляется в контейнере](https://github.com/whitecircle/halo/blob/main/human-docs/installation.md);
 ниже — установка его исходников и зависимостей в отдельное Python-окружение
-для этой плотной модели и параллельного обучения. `requirements.txt` ожидает клон Halo
-рядом с этим репозиторием.
+для этой плотной модели и параллельного обучения. Клон Halo должен лежать рядом
+с этим репозиторием.
+
+Halo 1.0.0 объявляет `gram-newton-schulz` обязательной зависимостью. Она
+подтягивает CUDA 12.9 bindings, несовместимые с `torch==2.11.0+cu130`.
+В этом проекте используется AdamW, а не Muon: пакет `gram-newton-schulz`
+нужен Halo только для импорта модуля оптимизаторов. Поэтому основные зависимости
+устанавливаются из `requirements.txt`, затем `gram-newton-schulz` и Halo
+устанавливаются с `--no-deps`. CUDA-библиотеки Muon при этом не требуются.
 
 ```bash
 git clone https://github.com/whitecircle/halo.git
@@ -104,9 +111,23 @@ python -m pip install 'torch==2.11.0+cu130' 'torchvision==0.26.0+cu130' \
   --index-url https://download.pytorch.org/whl/cu130
 python -m pip install --no-build-isolation 'causal-conv1d==1.6.2.post1'
 python -m pip install --no-build-isolation -r requirements.txt
+python -m pip install --no-build-isolation --no-deps \
+  'gram-newton-schulz==0.1.6' -e ../halo
 
 python -c 'import torch; from src.trainers.reward.classification import ClassificationTrainer; print(torch.__version__, torch.cuda.device_count())'
 python -m unittest discover -s tests -v
+```
+
+Если используете `uv` в уже активированном Python 3.12 окружении, после
+установки CUDA PyTorch выполните аналогичные команды:
+
+```bash
+uv pip install --upgrade setuptools wheel ninja hatchling
+uv pip install --no-build-isolation 'causal-conv1d==1.6.2.post1'
+uv pip install --no-build-isolation -r requirements.txt
+uv pip install --no-build-isolation --no-deps \
+  'gram-newton-schulz==0.1.6' -e ../halo
+python -c 'import torch; from src.trainers.reward.classification import ClassificationTrainer; print(torch.__version__, torch.cuda.device_count())'
 ```
 
 В `configs/full_h100.toml` включён ClearML. Настройте подключение один раз
