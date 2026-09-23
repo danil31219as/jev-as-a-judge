@@ -1,5 +1,6 @@
 # Small run with the optional Laya-style RLCD loss.
 model = "Qwen/Qwen3.5-0.8B"
+source_dir = "checkpoints/pollux-source"
 output_dir = "checkpoints/pollux-sample-rlcd"
 full_dataset = false
 samples = 100

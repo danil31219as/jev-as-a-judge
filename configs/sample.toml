@@ -1,5 +1,6 @@
 # Small 80/20 run for checking the pipeline before full training.
 model = "Qwen/Qwen3.5-0.8B"
+source_dir = "checkpoints/pollux-source"
 output_dir = "checkpoints/pollux-sample-ce"
 full_dataset = false
 samples = 100

@@ -1,5 +1,6 @@
 # RLCD variant; reuses the prepared split from full_h100.toml.
 model = "Qwen/Qwen3.5-0.8B"
+source_dir = "checkpoints/pollux-source"
 full_dataset = true
 prepared_data_dir = "checkpoints/pollux-full-data"
 output_dir = "checkpoints/pollux-full-rlcd"

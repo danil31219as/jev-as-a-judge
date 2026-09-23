@@ -11,6 +11,7 @@ import tomllib
 from typing import Any, Iterable
 
 from judge_data import MAX_INPUT_TOKENS, marker_ids, prepare_row
+from pollux_source import DATASET_REVISION, load_pollux_source
 
 
 TEST_TASK_TYPES = (
@@ -194,6 +195,7 @@ def prepare_full_examples(
             )
         provenance = {
             "dataset": "ai-forever/POLLUX",
+            "dataset_revision": DATASET_REVISION,
             "source_split": "test",
             "mode": "full",
             "model": model,
@@ -246,6 +248,7 @@ CONFIG_TYPES: dict[str, type] = {
     "model": str,
     "output_dir": str,
     "prepared_data_dir": str,
+    "source_dir": str,
     "full_dataset": bool,
     "samples": int,
     "test_samples": int,
@@ -301,6 +304,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--prepared-data-dir", default=None,
         help="reuse full-dataset preparation from another run directory",
+    )
+    parser.add_argument(
+        "--source-dir", default="checkpoints/pollux-source",
+        help="local cache of pinned POLLUX Parquet shards",
     )
     parser.add_argument(
         "--full-dataset", action="store_true",
@@ -394,7 +401,7 @@ def init_clearml(args: argparse.Namespace, task_class: Any = None) -> Any:
 
 
 def run(args: argparse.Namespace, clearml_task: Any = None) -> None:
-    from datasets import Dataset, load_dataset
+    from datasets import Dataset
     from transformers import AutoTokenizer, set_seed
 
     set_seed(args.seed)
@@ -416,7 +423,7 @@ def run(args: argparse.Namespace, clearml_task: Any = None) -> None:
         ):
             if int(os.environ.get("WORLD_SIZE", "1")) > 1:
                 raise RuntimeError("Prepare full data with one Python process before torchrun")
-            source = load_dataset("ai-forever/POLLUX", split="test", streaming=True)
+            source = load_pollux_source(Path(args.source_dir))
             provenance = prepare_full_examples(
                 source, tokenizer, output_dir=data_dir, model=args.model,
                 seed=args.seed, max_length=args.max_length, max_options=args.max_options,
@@ -429,14 +436,15 @@ def run(args: argparse.Namespace, clearml_task: Any = None) -> None:
         train_count = provenance["splits"]["train"]["count"]
         test_count = provenance["splits"]["test"]["count"]
     else:
-        source = load_dataset("ai-forever/POLLUX", split="test", streaming=True)
+        source = load_pollux_source(Path(args.source_dir))
         source = source.shuffle(seed=args.seed, buffer_size=args.shuffle_buffer)
         train_records, test_records, train_manifest, test_manifest = select_examples(
             source, tokenizer, samples=args.samples, test_samples=args.test_samples,
             seed=args.seed, max_length=args.max_length, max_options=args.max_options,
         )
         provenance = {
-            "dataset": "ai-forever/POLLUX", "source_split": "test", "mode": "sample",
+            "dataset": "ai-forever/POLLUX", "dataset_revision": DATASET_REVISION,
+            "source_split": "test", "mode": "sample",
             "selected_examples": args.samples, "seed": args.seed,
             "max_length": args.max_length, "max_options": args.max_options,
             "test_task_types": list(TEST_TASK_TYPES),
