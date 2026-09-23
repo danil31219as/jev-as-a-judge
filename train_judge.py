@@ -7,6 +7,7 @@ from collections import Counter
 import json
 import os
 from pathlib import Path
+import tomllib
 from typing import Any, Iterable
 
 from judge_data import MAX_INPUT_TOKENS, marker_ids, prepare_row
@@ -241,8 +242,60 @@ def load_full_selection(output_dir: Path, *, model: str, seed: int,
     return provenance
 
 
-def parse_args() -> argparse.Namespace:
+CONFIG_TYPES: dict[str, type] = {
+    "model": str,
+    "output_dir": str,
+    "prepared_data_dir": str,
+    "full_dataset": bool,
+    "samples": int,
+    "test_samples": int,
+    "seed": int,
+    "max_length": int,
+    "max_options": int,
+    "shuffle_buffer": int,
+    "epochs": float,
+    "learning_rate": float,
+    "per_device_train_batch_size": int,
+    "per_device_eval_batch_size": int,
+    "gradient_accumulation_steps": int,
+    "dataloader_num_workers": int,
+    "gradient_checkpointing": bool,
+    "logging_steps": int,
+    "save_total_limit": int,
+    "laya_rl": bool,
+    "rl_group_size": int,
+    "rl_sigma_start": float,
+    "rl_sigma_end": float,
+    "clearml": bool,
+    "clearml_project": str,
+    "clearml_task_name": str,
+}
+
+
+def load_train_config(path: str | Path) -> dict[str, Any]:
+    """Read typed training defaults from TOML before parsing CLI overrides."""
+    with Path(path).open("rb") as config_file:
+        values = tomllib.load(config_file)
+    unknown = set(values) - set(CONFIG_TYPES)
+    if unknown:
+        raise ValueError(f"Unknown training config keys: {', '.join(sorted(unknown))}")
+    for key, value in values.items():
+        expected = CONFIG_TYPES[key]
+        if expected is float:
+            valid = type(value) in (int, float)
+        else:
+            valid = type(value) is expected
+        if not valid:
+            raise ValueError(f"Training config {key!r} must be {expected.__name__}")
+    return values
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    config_parser = argparse.ArgumentParser(add_help=False)
+    config_parser.add_argument("--config", type=str)
+    config_args, _ = config_parser.parse_known_args(argv)
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--config", type=str, help="TOML file with training and data options")
     parser.add_argument("--model", default="Qwen/Qwen3.5-0.8B")
     parser.add_argument("--output-dir", default="checkpoints/pollux-tool-call-judge")
     parser.add_argument(
@@ -265,12 +318,24 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--per-device-eval-batch-size", type=int, default=1)
     parser.add_argument("--gradient-accumulation-steps", type=int, default=8)
     parser.add_argument("--dataloader-num-workers", type=int, default=0)
+    parser.add_argument("--gradient-checkpointing", action=argparse.BooleanOptionalAction,
+                        default=True)
+    parser.add_argument("--logging-steps", type=int, default=10)
+    parser.add_argument("--save-total-limit", type=int, default=2)
     parser.add_argument("--laya-rl", action="store_true", help="add Laya-style RLCD to soft CE")
+    parser.add_argument("--rl-group-size", type=int, default=4)
+    parser.add_argument("--rl-sigma-start", type=float, default=0.4)
+    parser.add_argument("--rl-sigma-end", type=float, default=0.1)
     parser.add_argument("--clearml", action="store_true", help="log this run to ClearML")
     parser.add_argument("--clearml-project", default="jev-as-a-judge")
     parser.add_argument("--clearml-task-name", default=None)
     parser.add_argument("--prepare-only", action="store_true")
-    args = parser.parse_args()
+    if config_args.config:
+        try:
+            parser.set_defaults(**load_train_config(config_args.config))
+        except (OSError, tomllib.TOMLDecodeError, ValueError) as exc:
+            parser.error(f"cannot load --config: {exc}")
+    args = parser.parse_args(argv)
     if args.prepared_data_dir and not args.full_dataset:
         parser.error("--prepared-data-dir requires --full-dataset")
     if not args.full_dataset and (
@@ -284,6 +349,10 @@ def parse_args() -> argparse.Namespace:
     if (args.per_device_train_batch_size < 1 or args.per_device_eval_batch_size < 1
             or args.gradient_accumulation_steps < 1 or args.dataloader_num_workers < 0):
         parser.error("batch sizes and gradient-accumulation-steps must be positive; workers >= 0")
+    if args.logging_steps < 1 or args.save_total_limit < 1:
+        parser.error("logging-steps and save-total-limit must be positive")
+    if args.rl_group_size < 2 or args.rl_sigma_start <= 0 or args.rl_sigma_end <= 0:
+        parser.error("RL group size must be >= 2 and sigmas must be positive")
     return args
 
 
@@ -336,7 +405,8 @@ def run(args: argparse.Namespace, clearml_task: Any = None) -> None:
     start_id, close_id = marker_ids(tokenizer)
 
     output_dir = Path(args.output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
+    if not (args.full_dataset and args.prepare_only):
+        output_dir.mkdir(parents=True, exist_ok=True)
     selection_path = output_dir / "selection.json"
     if args.full_dataset:
         data_dir = Path(args.prepared_data_dir) if args.prepared_data_dir else output_dir
@@ -385,6 +455,11 @@ def run(args: argparse.Namespace, clearml_task: Any = None) -> None:
         clearml_task.upload_artifact(
             name="selection", artifact_object=str(selection_path.resolve()), wait_on_upload=True
         )
+        if args.config:
+            clearml_task.upload_artifact(
+                name="training_config", artifact_object=str(Path(args.config).resolve()),
+                wait_on_upload=True,
+            )
         logger = clearml_task.get_logger()
         logger.report_single_value(name="data/train_examples", value=train_count)
         logger.report_single_value(name="data/test_examples", value=test_count)
@@ -438,8 +513,8 @@ def run(args: argparse.Namespace, clearml_task: Any = None) -> None:
     model.config.get_text_config().pad_token_id = tokenizer.pad_token_id
     model.config.use_cache = False
     model.config.judge_rlcd_enabled = args.laya_rl
-    model.config.judge_rlcd_group_size = 4
-    model.config.judge_rlcd_sigma = 0.4
+    model.config.judge_rlcd_group_size = args.rl_group_size
+    model.config.judge_rlcd_sigma = args.rl_sigma_start
 
     training_args = ClassificationConfig(
         output_dir=str(output_dir),
@@ -452,10 +527,10 @@ def run(args: argparse.Namespace, clearml_task: Any = None) -> None:
         learning_rate=args.learning_rate,
         num_train_epochs=args.epochs,
         bf16=True,
-        gradient_checkpointing=True,
-        logging_steps=10,
+        gradient_checkpointing=args.gradient_checkpointing,
+        logging_steps=args.logging_steps,
         save_strategy="epoch",
-        save_total_limit=2,
+        save_total_limit=args.save_total_limit,
         eval_strategy="no",
         report_to="clearml" if args.clearml else "none",
         remove_unused_columns=False,
@@ -478,7 +553,9 @@ def run(args: argparse.Namespace, clearml_task: Any = None) -> None:
         class LayaSigmaCallback(TrainerCallback):
             def on_epoch_begin(self, _args, state, control, **_kwargs):
                 progress = min(1.0, max(0.0, (state.epoch or 0.0) / max(args.epochs - 1, 1)))
-                model.config.judge_rlcd_sigma = 0.4 + (0.1 - 0.4) * progress
+                model.config.judge_rlcd_sigma = (
+                    args.rl_sigma_start + (args.rl_sigma_end - args.rl_sigma_start) * progress
+                )
                 return control
 
         trainer.add_callback(LayaSigmaCallback())

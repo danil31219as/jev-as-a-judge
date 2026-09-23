@@ -1,0 +1,12 @@
+# Linux/Python 3.12 host installation for the dense two-H100 run.
+# Clone whitecircle/halo as a sibling directory before installing this file.
+# Install CUDA PyTorch first, then use pip --no-build-isolation (see README).
+--extra-index-url https://download.pytorch.org/whl/cu130
+torch==2.11.0+cu130
+torchvision==0.26.0+cu130
+transformers==5.16.1
+datasets>=4.8.5,<5.0.0
+causal-conv1d==1.6.2.post1
+flash-linear-attention==0.4.2
+clearml>=2.0.2,<3.0.0
+-e ../halo

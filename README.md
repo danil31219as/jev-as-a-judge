@@ -65,115 +65,91 @@ train. Лимиты `--samples` и `--test-samples` в этом режиме н�
 учебный эксперимент. Результат на POLLUX после такого обучения нельзя считать
 независимой оценкой качества.
 
-## Запуск
+## Конфигурация и запуск
 
-Нужна среда [Halo](https://github.com/whitecircle/halo) 1.0 с совместимыми
-PyTorch, Transformers, Datasets и GPU с поддержкой BF16. Скрипт использует
-`ClassificationTrainer` из Halo напрямую: стандартная команда
-`halo launch classification` использует представление конца последовательности
-и не извлекает логиты на `</tool_call>`. Положите корень клона Halo в
-`PYTHONPATH`, затем запустите:
+Параметры данных, обучения, RLCD и ClearML находятся в TOML-файлах каталога
+`configs/`. Программа читает их через `--config`; `--prepare-only` запускает
+только подготовку данных. `configs/sample.toml` и `configs/sample_rlcd.toml`
+задают пробный запуск на 100 строках. Для всего датасета и двух H100 служат
+`configs/full_h100.toml` и `configs/full_h100_rlcd.toml`. Изменяйте гиперпараметры
+в этих файлах. Например, при нехватке памяти установите
+`per_device_train_batch_size = 1` и `gradient_accumulation_steps = 16`.
 
-```bash
-export PYTHONPATH=/path/to/halo:$PYTHONPATH
-python train_judge.py --prepare-only
-python train_judge.py --output-dir checkpoints/pollux-tool-call-judge
-python train_judge.py --laya-rl --output-dir checkpoints/pollux-tool-call-judge-rlcd
-```
+Скрипт использует `ClassificationTrainer` из [Halo](https://github.com/whitecircle/halo)
+напрямую: стандартная команда `halo launch classification` не извлекает логиты
+на `</tool_call>`.
 
-Для логирования в ClearML установите и настройте SDK, затем добавьте флаг:
+### Установка без Docker на Linux-сервере с H100
 
-```bash
-pip install clearml
-clearml-init
-python train_judge.py --clearml --clearml-project jev-as-a-judge
-```
-
-Каждый запуск создаёт отдельную задачу ClearML. В неё записываются параметры
-запуска, loss и learning rate по шагам, итоговые тестовые MAE/RMSE/macro-F1,
-размеры выборок, а также файлы `selection.json` и `test_metrics.json`.
-Имя задачи можно задать через `--clearml-task-name`. По умолчанию большие
-чекпоинты остаются локально; `CLEARML_LOG_MODEL=TRUE` включает их загрузку
-через штатную интеграцию Transformers.
-
-Первый запуск проверяет разбиение 80/20, chat template, сохранность всех
-закрывающих маркеров и записывает `selection.json`, не загружая веса Qwen.
-Второй обучает на 80 примерах, считает метрики на 20 тестовых и сохраняет
-модель с токенизатором в `checkpoints/pollux-tool-call-judge/final`.
-Число тестовых строк меняется через `--test-samples` (не менее восьми), а
-`--samples` задаёт общее число. Проверка данных без GPU:
+Нужны Python 3.12, драйвер NVIDIA с поддержкой CUDA 13, CUDA Toolkit с `nvcc`
+и достаточно места для кэша датасета и чекпоинтов. Halo официально
+[поставляется в контейнере](https://github.com/whitecircle/halo/blob/main/human-docs/installation.md);
+ниже — установка его исходников и зависимостей в отдельное Python-окружение
+для этой плотной модели и параллельного обучения. `requirements.txt` ожидает клон Halo
+рядом с этим репозиторием.
 
 ```bash
-python -m unittest discover -s tests -v
-```
-
-### Полный POLLUX на двух H100
-
-Команды ниже рассчитаны на Linux-сервер с Docker, NVIDIA Container Toolkit и
-двумя H100. Образ Halo для Hopper уже содержит совместимые PyTorch,
-Transformers и исходники Halo в `/workspace`; репозиторий судьи монтируется
-отдельно в `/judge`.
-
-На сервере:
-
-```bash
+git clone https://github.com/whitecircle/halo.git
+git -C halo checkout v1.0.0
 git clone https://github.com/danil31219as/jev-as-a-judge.git
 cd jev-as-a-judge
 nvidia-smi -L
-mkdir -p checkpoints/hf-cache checkpoints/tmp
-docker pull public.ecr.aws/whitecircle/halo:hopper-1.0.0
-docker run --rm -it --gpus all --ipc=host \
-  --ulimit memlock=-1 --ulimit stack=67108864 --shm-size=128g \
-  -e CUDA_VISIBLE_DEVICES=0,1 \
-  -e HF_HOME=/judge/checkpoints/hf-cache \
-  -e HF_DATASETS_CACHE=/judge/checkpoints/hf-cache/datasets \
-  -e TMPDIR=/judge/checkpoints/tmp \
-  -e PYTHONPATH=/workspace:/judge \
-  -v "$PWD:/judge" -w /judge \
-  public.ecr.aws/whitecircle/halo:hopper-1.0.0 bash
+nvcc --version
+
+python3.12 -m venv .venv
+source .venv/bin/activate
+export TORCH_CUDA_ARCH_LIST=9.0
+python -m pip install --upgrade pip setuptools wheel ninja hatchling
+python -m pip install 'torch==2.11.0+cu130' 'torchvision==0.26.0+cu130' \
+  --index-url https://download.pytorch.org/whl/cu130
+python -m pip install --no-build-isolation 'causal-conv1d==1.6.2.post1'
+python -m pip install --no-build-isolation -r requirements.txt
+
+python -c 'import torch; from src.trainers.reward.classification import ClassificationTrainer; print(torch.__version__, torch.cuda.device_count())'
+python -m unittest discover -s tests -v
 ```
 
-В контейнере:
+В `configs/full_h100.toml` включён ClearML. Настройте подключение один раз
+командой `clearml-init`; если оно не нужно, задайте `clearml = false` в обоих
+полных конфигах и пропустите `clearml-init`. Каждый запуск обучения пишет в ClearML параметры, loss,
+learning rate, тестовые MAE/RMSE/macro-F1 и файлы `selection.json`,
+`test_metrics.json`, а также сам TOML-конфиг. Чекпоинты по умолчанию остаются
+локально.
+
+### Полный POLLUX на двух H100
+
+Подготовка выполняется один раз одним процессом. Обе тренировки используют
+одно и то же разбиение в `checkpoints/pollux-full-data`:
 
 ```bash
-python -m unittest discover -s tests -v
-python train_judge.py --full-dataset --prepare-only \
-  --output-dir checkpoints/pollux-full-data
-
-# Если нужен ClearML, настройте его в этой же сессии контейнера:
-python -m pip install clearml
 clearml-init
+mkdir -p checkpoints/hf-cache checkpoints/tmp
+export HF_HOME="$PWD/checkpoints/hf-cache"
+export HF_DATASETS_CACHE="$HF_HOME/datasets"
+export TMPDIR="$PWD/checkpoints/tmp"
+export CUDA_VISIBLE_DEVICES=0,1
 
+python train_judge.py --config configs/full_h100.toml --prepare-only
 torchrun --standalone --nproc_per_node=2 train_judge.py \
-  --full-dataset --prepared-data-dir checkpoints/pollux-full-data \
-  --output-dir checkpoints/pollux-full-ce \
-  --per-device-train-batch-size 2 --per-device-eval-batch-size 2 \
-  --gradient-accumulation-steps 8 --dataloader-num-workers 4 \
-  --epochs 3 --learning-rate 1e-5 \
-  --clearml --clearml-project jev-as-a-judge
-
+  --config configs/full_h100.toml
 cat checkpoints/pollux-full-ce/test_metrics.json
 ```
 
-Чтобы обучить отдельную модель с RLCD на том же разбиении, запустите в
-контейнере ещё одну команду:
+Отдельный запуск с RLCD на тех же подготовленных данных:
 
 ```bash
 torchrun --standalone --nproc_per_node=2 train_judge.py \
-  --full-dataset --prepared-data-dir checkpoints/pollux-full-data \
-  --output-dir checkpoints/pollux-full-rlcd --laya-rl \
-  --per-device-train-batch-size 2 --per-device-eval-batch-size 2 \
-  --gradient-accumulation-steps 8 --dataloader-num-workers 4 \
-  --epochs 3 --learning-rate 1e-5 \
-  --clearml --clearml-project jev-as-a-judge
+  --config configs/full_h100_rlcd.toml
+cat checkpoints/pollux-full-rlcd/test_metrics.json
 ```
 
-Если ClearML не настроен, пропустите две команды его установки и настройки и
-уберите `--clearml --clearml-project jev-as-a-judge` из запусков обучения.
-Эффективный размер батча при указанных параметрах: 2 GPU × 2 примера × 8
-шагов накопления = 32. Если памяти не хватит, уменьшите
-`--per-device-train-batch-size` до 1 и увеличьте
-`--gradient-accumulation-steps` до 16.
+Для пробного запуска на 100 строках используйте:
+
+```bash
+python train_judge.py --config configs/sample.toml --prepare-only
+python train_judge.py --config configs/sample.toml
+python train_judge.py --config configs/sample_rlcd.toml
+```
 
 Чтобы сохранить отдельную случайную строку POLLUX и посмотреть точный вход
 Qwen после токенизации и обратного декодирования, выполните:

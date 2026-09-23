@@ -1,0 +1,26 @@
+# RLCD variant; reuses the prepared split from full_h100.toml.
+model = "Qwen/Qwen3.5-0.8B"
+full_dataset = true
+prepared_data_dir = "checkpoints/pollux-full-data"
+output_dir = "checkpoints/pollux-full-rlcd"
+seed = 42
+max_length = 4096
+max_options = 5
+
+epochs = 3.0
+learning_rate = 1e-5
+per_device_train_batch_size = 2
+per_device_eval_batch_size = 2
+gradient_accumulation_steps = 8
+dataloader_num_workers = 4
+gradient_checkpointing = true
+logging_steps = 10
+save_total_limit = 2
+
+laya_rl = true
+rl_group_size = 4
+rl_sigma_start = 0.4
+rl_sigma_end = 0.1
+clearml = true
+clearml_project = "jev-as-a-judge"
+clearml_task_name = "Qwen3.5-0.8B POLLUX full RLCD"
