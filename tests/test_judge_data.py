@@ -1,8 +1,14 @@
 import re
+import json
+from pathlib import Path
+import tempfile
 import unittest
 
 from judge_data import annotation_score_counts, make_messages, parse_rubric, prepare_row
-from train_judge import TEST_TASK_TYPES, make_test_quotas, select_examples
+from train_judge import (
+    TEST_TASK_TYPES, full_data_paths, load_full_selection, make_test_quotas,
+    prepare_full_examples, select_examples,
+)
 
 
 class TinyChatTokenizer:
@@ -135,6 +141,42 @@ class JudgeDataTests(unittest.TestCase):
         self.assertTrue(all(meta["option_values"] == [0, 1] for meta in test_meta))
         self.assertTrue(all(meta["token_count"] <= 4096 for meta in train_meta + test_meta))
         self.assertTrue(all(meta["stream_position"] != 0 for meta in train_meta))
+
+    def test_full_dataset_streams_every_valid_row_and_reuses_preparation(self):
+        template = {
+            "instruction": "Вопрос", "answer": "Ответ",
+            "rubrics": "0: Нет. 1: Да.",
+            "annotations": [{"score": 0}, {"score": 1}],
+        }
+        rows = [dict(template, task_type="Прочий тип", instruction=f"Вопрос {i}")
+                for i in range(3)]
+        rows += [dict(template, task_type=task_type) for task_type in TEST_TASK_TYPES]
+        rows += [dict(template, task_type=TEST_TASK_TYPES[0], answer="Ещё ответ")]
+        rows += [dict(template, task_type="Прочий тип", instruction="Длинный " * 600)]
+        rows += [dict(template, task_type="Прочий тип", annotations=[{"score": -1}])]
+        with tempfile.TemporaryDirectory() as directory:
+            output_dir = Path(directory)
+            selection = prepare_full_examples(
+                iter(rows), TinyChatTokenizer(), output_dir=output_dir,
+                model="test-model", seed=42, max_length=4096, max_options=5,
+            )
+            train_path, test_path, _ = full_data_paths(output_dir)
+            train = [json.loads(line) for line in train_path.read_text(encoding="utf-8").splitlines()]
+            test = [json.loads(line) for line in test_path.read_text(encoding="utf-8").splitlines()]
+            self.assertEqual((len(train), len(test)), (3, 9))
+            self.assertEqual(selection["source_rows_seen"], len(rows))
+            self.assertEqual(selection["filtered_rows"], 2)
+            self.assertEqual(selection["splits"]["test"]["task_type_counts"][TEST_TASK_TYPES[0]], 2)
+            self.assertTrue(all(record["option_values"][:2] == [0, 1] for record in test))
+            self.assertTrue(all(len(record["input_ids"]) <= 4096 for record in train + test))
+            self.assertEqual(load_full_selection(
+                output_dir, model="test-model", seed=42, max_length=4096, max_options=5,
+            ), selection)
+            with self.assertRaises(ValueError):
+                load_full_selection(
+                    output_dir, model="different-model", seed=42,
+                    max_length=4096, max_options=5,
+                )
 
 
 if __name__ == "__main__":

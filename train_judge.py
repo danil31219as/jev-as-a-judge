@@ -116,10 +116,143 @@ def summarize_split(manifest: list[dict]) -> dict:
     }
 
 
+def full_data_paths(output_dir: Path) -> tuple[Path, Path, Path]:
+    data_dir = output_dir / "prepared"
+    return data_dir / "train.jsonl", data_dir / "test.jsonl", output_dir / "selection.json"
+
+
+def _full_split_summary(count: int, task_types: Counter, scores: Counter,
+                        disagreement: int, scale_sizes: Counter) -> dict:
+    return {
+        "count": count,
+        "task_type_counts": dict(sorted(task_types.items())),
+        "assessor_score_counts": dict(sorted(scores.items())),
+        "rows_with_assessor_disagreement": disagreement,
+        "scale_size_counts": dict(sorted(scale_sizes.items())),
+    }
+
+
+def prepare_full_examples(
+    source: Iterable[dict[str, Any]], tokenizer: Any, *, output_dir: Path,
+    model: str, seed: int, max_length: int, max_options: int,
+) -> dict[str, Any]:
+    """Stream every eligible POLLUX row into disk-backed train/test JSONL files."""
+    train_path, test_path, selection_path = full_data_paths(output_dir)
+    if any(path.exists() for path in (train_path, test_path, selection_path)):
+        raise FileExistsError(
+            f"Full-data output already exists in {output_dir}; use a fresh --output-dir"
+        )
+    train_path.parent.mkdir(parents=True, exist_ok=True)
+    counts = {split: Counter() for split in ("train", "test")}
+    task_counts = {split: Counter() for split in ("train", "test")}
+    score_counts = {split: Counter() for split in ("train", "test")}
+    scale_counts = {split: Counter() for split in ("train", "test")}
+    disagreement = Counter()
+    source_rows = 0
+    try:
+        with train_path.open("x", encoding="utf-8") as train_file, test_path.open(
+            "x", encoding="utf-8"
+        ) as test_file:
+            for source_position, row in enumerate(source):
+                source_rows += 1
+                if source_rows % 5000 == 0:
+                    print(
+                        f"Scanned {source_rows} rows: train={counts['train']['rows']}, "
+                        f"test={counts['test']['rows']}", flush=True,
+                    )
+                task_type = str(row.get("task_type") or "").strip()
+                if not task_type:
+                    continue
+                split = "test" if task_type in TEST_TASK_TYPES else "train"
+                prepared = prepare_row(
+                    row, tokenizer, seed=seed + source_position,
+                    max_length=max_length, max_options=max_options,
+                    shuffle_options=split == "train",
+                )
+                if prepared is None:
+                    continue
+                record, metadata = prepared
+                if split == "test" and metadata["option_values"] != list(
+                    range(len(metadata["option_values"]))
+                ):
+                    raise ValueError("Test candidates must be in numeric score order")
+                target_file = test_file if split == "test" else train_file
+                target_file.write(json.dumps(record, ensure_ascii=False) + "\n")
+                counts[split]["rows"] += 1
+                task_counts[split][task_type] += 1
+                score_counts[split].update(metadata["annotation_counts"])
+                scale_counts[split][len(metadata["option_values"])] += 1
+                disagreement[split] += sum(
+                    count > 0 for count in metadata["annotation_counts"].values()
+                ) > 1
+        missing = set(TEST_TASK_TYPES) - set(task_counts["test"])
+        if not counts["train"]["rows"] or missing:
+            raise RuntimeError(
+                f"Full POLLUX split is incomplete: train={counts['train']['rows']}, "
+                f"missing test types={sorted(missing)}"
+            )
+        provenance = {
+            "dataset": "ai-forever/POLLUX",
+            "source_split": "test",
+            "mode": "full",
+            "model": model,
+            "seed": seed,
+            "max_length": max_length,
+            "max_options": max_options,
+            "source_rows_seen": source_rows,
+            "filtered_rows": source_rows - counts["train"]["rows"] - counts["test"]["rows"],
+            "test_task_types": list(TEST_TASK_TYPES),
+            "splits": {
+                split: _full_split_summary(
+                    counts[split]["rows"], task_counts[split], score_counts[split],
+                    disagreement[split], scale_counts[split],
+                ) for split in ("train", "test")
+            },
+        }
+        selection_path.write_text(
+            json.dumps(provenance, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        return json.loads(selection_path.read_text(encoding="utf-8"))
+    except BaseException:
+        train_path.unlink(missing_ok=True)
+        test_path.unlink(missing_ok=True)
+        selection_path.unlink(missing_ok=True)
+        raise
+
+
+def load_full_selection(output_dir: Path, *, model: str, seed: int,
+                        max_length: int, max_options: int) -> dict[str, Any]:
+    train_path, test_path, selection_path = full_data_paths(output_dir)
+    if not all(path.is_file() for path in (train_path, test_path, selection_path)):
+        raise FileNotFoundError(
+            f"Full data is not prepared in {output_dir}; run --full-dataset --prepare-only first"
+        )
+    provenance = json.loads(selection_path.read_text(encoding="utf-8"))
+    expected = {
+        "dataset": "ai-forever/POLLUX", "source_split": "test", "mode": "full",
+        "model": model, "seed": seed, "max_length": max_length,
+        "max_options": max_options, "test_task_types": list(TEST_TASK_TYPES),
+    }
+    if any(provenance.get(key) != value for key, value in expected.items()):
+        raise ValueError(
+            f"Prepared data in {output_dir} uses different settings; "
+            "use matching arguments or a fresh --output-dir"
+        )
+    return provenance
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", default="Qwen/Qwen3.5-0.8B")
     parser.add_argument("--output-dir", default="checkpoints/pollux-tool-call-judge")
+    parser.add_argument(
+        "--prepared-data-dir", default=None,
+        help="reuse full-dataset preparation from another run directory",
+    )
+    parser.add_argument(
+        "--full-dataset", action="store_true",
+        help="use every valid POLLUX row; hold out all rows of the 8 test task types",
+    )
     parser.add_argument("--samples", type=int, default=100, help="total train + test rows")
     parser.add_argument("--test-samples", type=int, default=20)
     parser.add_argument("--seed", type=int, default=42)
@@ -128,18 +261,29 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--shuffle-buffer", type=int, default=512)
     parser.add_argument("--epochs", type=float, default=3.0)
     parser.add_argument("--learning-rate", type=float, default=1e-5)
+    parser.add_argument("--per-device-train-batch-size", type=int, default=1)
+    parser.add_argument("--per-device-eval-batch-size", type=int, default=1)
+    parser.add_argument("--gradient-accumulation-steps", type=int, default=8)
+    parser.add_argument("--dataloader-num-workers", type=int, default=0)
     parser.add_argument("--laya-rl", action="store_true", help="add Laya-style RLCD to soft CE")
     parser.add_argument("--clearml", action="store_true", help="log this run to ClearML")
     parser.add_argument("--clearml-project", default="jev-as-a-judge")
     parser.add_argument("--clearml-task-name", default=None)
     parser.add_argument("--prepare-only", action="store_true")
     args = parser.parse_args()
-    if args.samples <= args.test_samples or args.test_samples < len(TEST_TASK_TYPES):
+    if args.prepared_data_dir and not args.full_dataset:
+        parser.error("--prepared-data-dir requires --full-dataset")
+    if not args.full_dataset and (
+        args.samples <= args.test_samples or args.test_samples < len(TEST_TASK_TYPES)
+    ):
         parser.error("samples must exceed test-samples and test-samples must cover all 8 task types")
     if not 1 <= args.max_length <= MAX_INPUT_TOKENS or args.max_options < 2:
         parser.error(f"max-length must be 1..{MAX_INPUT_TOKENS}; max-options must be >= 2")
     if args.shuffle_buffer < 1 or args.epochs <= 0 or args.learning_rate <= 0:
         parser.error("shuffle-buffer, epochs and learning-rate must be positive")
+    if (args.per_device_train_batch_size < 1 or args.per_device_eval_batch_size < 1
+            or args.gradient_accumulation_steps < 1 or args.dataloader_num_workers < 0):
+        parser.error("batch sizes and gradient-accumulation-steps must be positive; workers >= 0")
     return args
 
 
@@ -191,49 +335,69 @@ def run(args: argparse.Namespace, clearml_task: Any = None) -> None:
         raise ValueError("Qwen tokenizer has no padding token")
     start_id, close_id = marker_ids(tokenizer)
 
-    source = load_dataset("ai-forever/POLLUX", split="test", streaming=True)
-    source = source.shuffle(seed=args.seed, buffer_size=args.shuffle_buffer)
-    train_records, test_records, train_manifest, test_manifest = select_examples(
-        source,
-        tokenizer,
-        samples=args.samples,
-        test_samples=args.test_samples,
-        seed=args.seed,
-        max_length=args.max_length,
-        max_options=args.max_options,
-    )
-
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    provenance = {
-        "dataset": "ai-forever/POLLUX",
-        "source_split": "test",
-        "selected_examples": args.samples,
-        "seed": args.seed,
-        "max_length": args.max_length,
-        "max_options": args.max_options,
-        "test_task_types": list(TEST_TASK_TYPES),
-        "test_type_quotas": make_test_quotas(args.test_samples),
-        "laya_rl": args.laya_rl,
-        "splits": {
-            "train": summarize_split(train_manifest),
-            "test": summarize_split(test_manifest),
-        },
-    }
     selection_path = output_dir / "selection.json"
-    selection_path.write_text(
-        json.dumps(provenance, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+    if args.full_dataset:
+        data_dir = Path(args.prepared_data_dir) if args.prepared_data_dir else output_dir
+        train_path, test_path, selection_path = full_data_paths(data_dir)
+        if args.prepare_only and not any(
+            path.exists() for path in (train_path, test_path, selection_path)
+        ):
+            if int(os.environ.get("WORLD_SIZE", "1")) > 1:
+                raise RuntimeError("Prepare full data with one Python process before torchrun")
+            source = load_dataset("ai-forever/POLLUX", split="test", streaming=True)
+            provenance = prepare_full_examples(
+                source, tokenizer, output_dir=data_dir, model=args.model,
+                seed=args.seed, max_length=args.max_length, max_options=args.max_options,
+            )
+        else:
+            provenance = load_full_selection(
+                data_dir, model=args.model, seed=args.seed,
+                max_length=args.max_length, max_options=args.max_options,
+            )
+        train_count = provenance["splits"]["train"]["count"]
+        test_count = provenance["splits"]["test"]["count"]
+    else:
+        source = load_dataset("ai-forever/POLLUX", split="test", streaming=True)
+        source = source.shuffle(seed=args.seed, buffer_size=args.shuffle_buffer)
+        train_records, test_records, train_manifest, test_manifest = select_examples(
+            source, tokenizer, samples=args.samples, test_samples=args.test_samples,
+            seed=args.seed, max_length=args.max_length, max_options=args.max_options,
+        )
+        provenance = {
+            "dataset": "ai-forever/POLLUX", "source_split": "test", "mode": "sample",
+            "selected_examples": args.samples, "seed": args.seed,
+            "max_length": args.max_length, "max_options": args.max_options,
+            "test_task_types": list(TEST_TASK_TYPES),
+            "test_type_quotas": make_test_quotas(args.test_samples),
+            "laya_rl": args.laya_rl,
+            "splits": {
+                "train": summarize_split(train_manifest),
+                "test": summarize_split(test_manifest),
+            },
+        }
+        selection_path.write_text(
+            json.dumps(provenance, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        train_count, test_count = len(train_records), len(test_records)
     if clearml_task is not None:
         clearml_task.upload_artifact(
             name="selection", artifact_object=str(selection_path.resolve()), wait_on_upload=True
         )
         logger = clearml_task.get_logger()
-        logger.report_single_value(name="data/train_examples", value=len(train_records))
-        logger.report_single_value(name="data/test_examples", value=len(test_records))
-    print(f"Prepared {len(train_records)} train and {len(test_records)} test examples")
+        logger.report_single_value(name="data/train_examples", value=train_count)
+        logger.report_single_value(name="data/test_examples", value=test_count)
+    print(f"Prepared {train_count} train and {test_count} test examples")
     if args.prepare_only:
         return
+
+    if args.full_dataset:
+        train_dataset = Dataset.from_json(str(train_path))
+        test_dataset = Dataset.from_json(str(test_path))
+    else:
+        train_dataset = Dataset.from_list(train_records)
+        test_dataset = Dataset.from_list(test_records)
 
     import torch
     from transformers import DataCollatorWithPadding, TrainerCallback
@@ -281,15 +445,17 @@ def run(args: argparse.Namespace, clearml_task: Any = None) -> None:
         output_dir=str(output_dir),
         max_length=args.max_length,
         loss_type="cross_entropy",  # Halo delegates this loss to ToolCallJudge.
-        per_device_train_batch_size=1,
-        per_device_eval_batch_size=1,
-        gradient_accumulation_steps=8,
+        per_device_train_batch_size=args.per_device_train_batch_size,
+        per_device_eval_batch_size=args.per_device_eval_batch_size,
+        gradient_accumulation_steps=args.gradient_accumulation_steps,
+        dataloader_num_workers=args.dataloader_num_workers,
         learning_rate=args.learning_rate,
         num_train_epochs=args.epochs,
         bf16=True,
         gradient_checkpointing=True,
         logging_steps=10,
         save_strategy="epoch",
+        save_total_limit=2,
         eval_strategy="no",
         report_to="clearml" if args.clearml else "none",
         remove_unused_columns=False,
@@ -298,8 +464,8 @@ def run(args: argparse.Namespace, clearml_task: Any = None) -> None:
     trainer = ToolCallClassificationTrainer(
         model=model,
         args=training_args,
-        train_dataset=Dataset.from_list(train_records),
-        eval_dataset=Dataset.from_list(test_records),
+        train_dataset=train_dataset,
+        eval_dataset=test_dataset,
         data_collator=DataCollatorWithPadding(tokenizer, padding="longest"),
         processing_class=tokenizer,
         compute_metrics=compute_judge_metrics,
@@ -319,24 +485,25 @@ def run(args: argparse.Namespace, clearml_task: Any = None) -> None:
 
     trainer.train()
     metrics = trainer.evaluate(metric_key_prefix="test")
-    metrics_path = output_dir / "test_metrics.json"
-    metrics_path.write_text(
-        json.dumps(metrics, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
-    if clearml_task is not None:
-        logger = clearml_task.get_logger()
-        for metric_name in ("mae", "rmse", "f1_macro"):
-            key = f"test_{metric_name}"
-            if key in metrics:
-                logger.report_single_value(name=f"test/{metric_name}", value=float(metrics[key]))
-        clearml_task.upload_artifact(
-            name="test_metrics", artifact_object=str(metrics_path.resolve()), wait_on_upload=True
-        )
     final_dir = output_dir / "final"
     trainer.save_model(str(final_dir))
-    tokenizer.save_pretrained(str(final_dir))
-    print(f"Test metrics: {metrics}")
-    print(f"Saved judge checkpoint to {final_dir}")
+    if trainer.is_world_process_zero():
+        metrics_path = output_dir / "test_metrics.json"
+        metrics_path.write_text(
+            json.dumps(metrics, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        if clearml_task is not None:
+            logger = clearml_task.get_logger()
+            for metric_name in ("mae", "rmse", "f1_macro"):
+                key = f"test_{metric_name}"
+                if key in metrics:
+                    logger.report_single_value(name=f"test/{metric_name}", value=float(metrics[key]))
+            clearml_task.upload_artifact(
+                name="test_metrics", artifact_object=str(metrics_path.resolve()), wait_on_upload=True
+            )
+        tokenizer.save_pretrained(str(final_dir))
+        print(f"Test metrics: {metrics}")
+        print(f"Saved judge checkpoint to {final_dir}")
 
 
 def main() -> None:

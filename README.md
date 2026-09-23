@@ -18,7 +18,7 @@
 
 ## Данные
 
-`train_judge.py` берёт ровно 100 строк из открытого
+По умолчанию `train_judge.py` берёт ровно 100 строк из открытого
 [POLLUX](https://huggingface.co/datasets/ai-forever/POLLUX). У источника есть
 только split `test`; скрипт создаёт собственные **train (80)** и **test (20)**.
 В test попадают только восемь типов из `TEST_TASK_TYPES` по полю `task_type`,
@@ -36,6 +36,17 @@
 `criteria_score` не используется как цель. Ни один вызов `score` не
 считается уже выбранным ответом: это только варианты. В test вызовы идут по
 возрастанию оценки, чтобы столбец логитов совпадал с числовой оценкой.
+
+Опция `--full-dataset` проходит по **всему** исходному split POLLUX. После
+проверки рубрик, голосов и ограничения 4096 токенов все пригодные строки восьми
+типов из `TEST_TASK_TYPES` составляют test, а все остальные пригодные строки —
+train. Лимиты `--samples` и `--test-samples` в этом режиме не используются.
+Скрипт сохраняет токенизированные строки в `prepared/train.jsonl` и
+`prepared/test.jsonl`, а числа и состав выборок — в `selection.json`. Подготовку
+нужно выполнить **одним процессом** до запуска на двух GPU; при обучении оба
+процесса читают готовые файлы. Параметр `--prepared-data-dir` позволяет
+использовать это разбиение повторно с другим `--output-dir`, например для
+отдельного запуска RLCD.
 
 После обучения `test_metrics.json` содержит **MAE** и **RMSE** между ожидаемыми
 числовыми оценками модели и ассесоров, а также **macro-F1** между наиболее
@@ -96,6 +107,74 @@ python train_judge.py --clearml --clearml-project jev-as-a-judge
 python -m unittest discover -s tests -v
 ```
 
+### Полный POLLUX на двух H100
+
+Команды ниже рассчитаны на Linux-сервер с Docker, NVIDIA Container Toolkit и
+двумя H100. Образ Halo для Hopper уже содержит совместимые PyTorch,
+Transformers и исходники Halo в `/workspace`; репозиторий судьи монтируется
+отдельно в `/judge`.
+
+На сервере:
+
+```bash
+git clone https://github.com/danil31219as/jev-as-a-judge.git
+cd jev-as-a-judge
+nvidia-smi -L
+mkdir -p checkpoints/hf-cache checkpoints/tmp
+docker pull public.ecr.aws/whitecircle/halo:hopper-1.0.0
+docker run --rm -it --gpus all --ipc=host \
+  --ulimit memlock=-1 --ulimit stack=67108864 --shm-size=128g \
+  -e CUDA_VISIBLE_DEVICES=0,1 \
+  -e HF_HOME=/judge/checkpoints/hf-cache \
+  -e HF_DATASETS_CACHE=/judge/checkpoints/hf-cache/datasets \
+  -e TMPDIR=/judge/checkpoints/tmp \
+  -e PYTHONPATH=/workspace:/judge \
+  -v "$PWD:/judge" -w /judge \
+  public.ecr.aws/whitecircle/halo:hopper-1.0.0 bash
+```
+
+В контейнере:
+
+```bash
+python -m unittest discover -s tests -v
+python train_judge.py --full-dataset --prepare-only \
+  --output-dir checkpoints/pollux-full-data
+
+# Если нужен ClearML, настройте его в этой же сессии контейнера:
+python -m pip install clearml
+clearml-init
+
+torchrun --standalone --nproc_per_node=2 train_judge.py \
+  --full-dataset --prepared-data-dir checkpoints/pollux-full-data \
+  --output-dir checkpoints/pollux-full-ce \
+  --per-device-train-batch-size 2 --per-device-eval-batch-size 2 \
+  --gradient-accumulation-steps 8 --dataloader-num-workers 4 \
+  --epochs 3 --learning-rate 1e-5 \
+  --clearml --clearml-project jev-as-a-judge
+
+cat checkpoints/pollux-full-ce/test_metrics.json
+```
+
+Чтобы обучить отдельную модель с RLCD на том же разбиении, запустите в
+контейнере ещё одну команду:
+
+```bash
+torchrun --standalone --nproc_per_node=2 train_judge.py \
+  --full-dataset --prepared-data-dir checkpoints/pollux-full-data \
+  --output-dir checkpoints/pollux-full-rlcd --laya-rl \
+  --per-device-train-batch-size 2 --per-device-eval-batch-size 2 \
+  --gradient-accumulation-steps 8 --dataloader-num-workers 4 \
+  --epochs 3 --learning-rate 1e-5 \
+  --clearml --clearml-project jev-as-a-judge
+```
+
+Если ClearML не настроен, пропустите две команды его установки и настройки и
+уберите `--clearml --clearml-project jev-as-a-judge` из запусков обучения.
+Эффективный размер батча при указанных параметрах: 2 GPU × 2 примера × 8
+шагов накопления = 32. Если памяти не хватит, уменьшите
+`--per-device-train-batch-size` до 1 и увеличьте
+`--gradient-accumulation-steps` до 16.
+
 Чтобы сохранить отдельную случайную строку POLLUX и посмотреть точный вход
 Qwen после токенизации и обратного декодирования, выполните:
 
@@ -110,7 +189,8 @@ python inspect_random_example.py
 После обучения загружайте `ToolCallJudge.from_pretrained(...)` из
 `judge_model.py`, применяйте **тот же** `make_messages` и chat template, а
 вероятности переводите из позиций логитов обратно в числовые оценки через
-`option_values`. Эта связь находится в `selection.json` для обеих выборок.
+`option_values`. В режиме 100 примеров эта связь находится в строках
+`selection.json`, а в полном режиме — в каждой записи `prepared/*.jsonl`.
 
 Источники реализации: [шаблон и токенизатор Qwen](https://huggingface.co/Qwen/Qwen3.5-0.8B/blob/main/tokenizer_config.json),
 [классификационный тренер Halo](https://github.com/whitecircle/halo/blob/main/src/trainers/reward/classification.py),
