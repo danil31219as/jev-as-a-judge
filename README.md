@@ -138,10 +138,11 @@ python -c 'import torch; from src.trainers.reward.classification import Classifi
 
 В `configs/full_h100.toml` включён ClearML. Настройте подключение один раз
 командой `clearml-init`; если оно не нужно, задайте `clearml = false` в обоих
-полных конфигах и пропустите `clearml-init`. Каждый запуск обучения пишет в ClearML параметры, loss,
-learning rate, тестовые MAE/RMSE/macro-F1 и файлы `selection.json`,
-`test_metrics.json`, а также сам TOML-конфиг. Чекпоинты по умолчанию остаются
-локально.
+полных конфигах и пропустите `clearml-init`. Режим `--prepare-only` не создаёт
+задачу ClearML. При обучении туда отправляются только текстовые логи и числовые
+метрики тренера (включая loss и learning rate), а после оценки — тестовые
+MAE/RMSE/macro-F1. Файлы данных, `selection.json`, TOML-конфиг,
+`test_metrics.json` и чекпоинты остаются локально.
 
 ### Полный POLLUX на двух H100
 

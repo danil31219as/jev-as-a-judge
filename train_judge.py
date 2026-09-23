@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 from collections import Counter
 import json
+import math
+from numbers import Real
 import os
 from pathlib import Path
 import tomllib
@@ -187,6 +189,10 @@ def prepare_full_examples(
                 disagreement[split] += sum(
                     count > 0 for count in metadata["annotation_counts"].values()
                 ) > 1
+        print(
+            f"Finished scanning {source_rows} rows: train={counts['train']['rows']}, "
+            f"test={counts['test']['rows']}", flush=True,
+        )
         missing = set(TEST_TASK_TYPES) - set(task_counts["test"])
         if not counts["train"]["rows"] or missing:
             raise RuntimeError(
@@ -375,8 +381,8 @@ def is_primary_process() -> bool:
 
 
 def init_clearml(args: argparse.Namespace, task_class: Any = None) -> Any:
-    """Initialize before importing training libraries so ClearML sees the full run."""
-    if not args.clearml or not is_primary_process():
+    """Create a training-only task with automatic uploads and stream capture off."""
+    if not args.clearml or getattr(args, "prepare_only", False) or not is_primary_process():
         return None
     if task_class is None:
         try:
@@ -394,10 +400,29 @@ def init_clearml(args: argparse.Namespace, task_class: Any = None) -> Any:
         reuse_last_task_id=False,
         auto_connect_arg_parser=False,
         auto_connect_frameworks=False,
+        auto_connect_streams=False,
+        auto_resource_monitoring=False,
     )
-    task.connect(dict(vars(args)), name="run", ignore_remote_overrides=True)
     print(f"ClearML task: {task.get_output_log_web_page()}")
     return task
+
+
+def report_clearml_training_logs(logger: Any, logs: dict[str, Any], step: int) -> None:
+    """Send only numeric trainer logs as scalars and text, without files or data."""
+    values = {
+        name: float(value) for name, value in logs.items()
+        if isinstance(value, Real) and not isinstance(value, bool)
+        and math.isfinite(float(value))
+    }
+    if not values:
+        return
+    for name, value in values.items():
+        group = "test" if name.startswith("test_") else "train"
+        logger.report_scalar(title=group, series=name, value=value, iteration=step)
+    logger.report_text(
+        f"step {step}: " + ", ".join(f"{name}={value:g}" for name, value in values.items()),
+        print_console=False,
+    )
 
 
 def run(args: argparse.Namespace, clearml_task: Any = None) -> None:
@@ -459,19 +484,7 @@ def run(args: argparse.Namespace, clearml_task: Any = None) -> None:
             json.dumps(provenance, ensure_ascii=False, indent=2), encoding="utf-8"
         )
         train_count, test_count = len(train_records), len(test_records)
-    if clearml_task is not None:
-        clearml_task.upload_artifact(
-            name="selection", artifact_object=str(selection_path.resolve()), wait_on_upload=True
-        )
-        if args.config:
-            clearml_task.upload_artifact(
-                name="training_config", artifact_object=str(Path(args.config).resolve()),
-                wait_on_upload=True,
-            )
-        logger = clearml_task.get_logger()
-        logger.report_single_value(name="data/train_examples", value=train_count)
-        logger.report_single_value(name="data/test_examples", value=test_count)
-    print(f"Prepared {train_count} train and {test_count} test examples")
+    print(f"Prepared {train_count} train and {test_count} test examples", flush=True)
     if args.prepare_only:
         return
 
@@ -540,7 +553,7 @@ def run(args: argparse.Namespace, clearml_task: Any = None) -> None:
         save_strategy="epoch",
         save_total_limit=args.save_total_limit,
         eval_strategy="no",
-        report_to="clearml" if args.clearml else "none",
+        report_to="none",
         remove_unused_columns=False,
         seed=args.seed,
     )
@@ -556,6 +569,17 @@ def run(args: argparse.Namespace, clearml_task: Any = None) -> None:
         label_names_list=[str(i) for i in range(args.max_options)],
         parallelism_config=ParallelismConfig(),
     )
+
+    if clearml_task is not None:
+        class ClearMLTrainingCallback(TrainerCallback):
+            def on_log(self, _args, state, control, logs=None, **_kwargs):
+                if state.is_world_process_zero:
+                    report_clearml_training_logs(
+                        clearml_task.get_logger(), logs or {}, state.global_step
+                    )
+                return control
+
+        trainer.add_callback(ClearMLTrainingCallback())
 
     if args.laya_rl:
         class LayaSigmaCallback(TrainerCallback):
@@ -583,9 +607,6 @@ def run(args: argparse.Namespace, clearml_task: Any = None) -> None:
                 key = f"test_{metric_name}"
                 if key in metrics:
                     logger.report_single_value(name=f"test/{metric_name}", value=float(metrics[key]))
-            clearml_task.upload_artifact(
-                name="test_metrics", artifact_object=str(metrics_path.resolve()), wait_on_upload=True
-            )
         tokenizer.save_pretrained(str(final_dir))
         print(f"Test metrics: {metrics}")
         print(f"Saved judge checkpoint to {final_dir}")
