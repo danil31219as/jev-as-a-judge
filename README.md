@@ -81,8 +81,11 @@ train. Лимиты `--samples` и `--test-samples` в этом режиме н�
 
 ### Установка без Docker на Linux-сервере с H100
 
-Нужны Python 3.12, драйвер NVIDIA с поддержкой CUDA 13, CUDA Toolkit с `nvcc`
-и достаточно места для кэша датасета и чекпоинтов. Halo официально
+Нужны Python 3.12, драйвер NVIDIA с поддержкой CUDA 13 и достаточно места
+для кэша датасета и чекпоинтов. `nvcc` не требуется: Qwen3.5 использует
+[PyTorch-реализацию свёртки](https://github.com/huggingface/transformers/blob/v5.16.1/src/transformers/models/qwen3_5/modeling_qwen3_5.py),
+если расширение `causal-conv1d` не установлено. Этот путь может быть медленнее.
+Halo официально
 [поставляется в контейнере](https://github.com/whitecircle/halo/blob/main/human-docs/installation.md);
 ниже — установка его исходников и зависимостей в отдельное Python-окружение
 для этой плотной модели и параллельного обучения. Клон Halo должен лежать рядом
@@ -101,15 +104,12 @@ git -C halo checkout v1.0.0
 git clone https://github.com/danil31219as/jev-as-a-judge.git
 cd jev-as-a-judge
 nvidia-smi -L
-nvcc --version
 
 python3.12 -m venv .venv
 source .venv/bin/activate
-export TORCH_CUDA_ARCH_LIST=9.0
-python -m pip install --upgrade pip setuptools wheel ninja hatchling
+python -m pip install --upgrade pip setuptools wheel hatchling
 python -m pip install 'torch==2.11.0+cu130' 'torchvision==0.26.0+cu130' \
   --index-url https://download.pytorch.org/whl/cu130
-python -m pip install --no-build-isolation 'causal-conv1d==1.6.2.post1'
 python -m pip install --no-build-isolation -r requirements.txt
 python -m pip install --no-build-isolation --no-deps \
   'gram-newton-schulz==0.1.6' -e ../halo
@@ -122,8 +122,7 @@ python -m unittest discover -s tests -v
 установки CUDA PyTorch выполните аналогичные команды:
 
 ```bash
-uv pip install --upgrade setuptools wheel ninja hatchling
-uv pip install --no-build-isolation 'causal-conv1d==1.6.2.post1'
+uv pip install --upgrade setuptools wheel hatchling
 uv pip install --no-build-isolation -r requirements.txt
 uv pip install --no-build-isolation --no-deps \
   'gram-newton-schulz==0.1.6' -e ../halo
