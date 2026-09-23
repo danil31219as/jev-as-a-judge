@@ -9,7 +9,7 @@ from typing import Any, Sequence
 def score_metrics(
     logits: Sequence[Sequence[float]], targets: Sequence[Sequence[float]]
 ) -> dict[str, float]:
-    """Compare expected scores; macro-F1 compares modal numeric scores."""
+    """Compare argmax scores with the assessors' majority score."""
     if len(logits) != len(targets) or not len(logits):
         raise ValueError("Metrics need equally sized, nonempty predictions and targets")
 
@@ -20,17 +20,13 @@ def score_metrics(
     for row_logits, row_targets in zip(logits, targets):
         if len(row_logits) != len(row_targets) or not len(row_logits):
             raise ValueError("Logit and target widths must match")
-        max_logit = max(float(value) for value in row_logits)
-        weights = [math.exp(float(value) - max_logit) for value in row_logits]
-        normalizer = sum(weights)
-        predicted = [value / normalizer for value in weights]
-        expected_prediction = sum(index * value for index, value in enumerate(predicted))
-        expected_target = sum(index * float(value) for index, value in enumerate(row_targets))
-        error = expected_prediction - expected_target
+        predicted_score = max(range(len(row_logits)), key=lambda i: float(row_logits[i]))
+        majority_score = max(range(len(row_targets)), key=lambda i: float(row_targets[i]))
+        error = predicted_score - majority_score
         absolute_errors.append(abs(error))
         squared_errors.append(error * error)
-        predicted_classes.append(max(range(len(predicted)), key=lambda i: predicted[i]))
-        target_classes.append(max(range(len(row_targets)), key=lambda i: row_targets[i]))
+        predicted_classes.append(predicted_score)
+        target_classes.append(majority_score)
 
     classes = set(predicted_classes) | set(target_classes)
     class_f1 = []
