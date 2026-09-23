@@ -9,6 +9,7 @@ import math
 from numbers import Real
 import os
 from pathlib import Path
+import sys
 import tomllib
 from typing import Any, Iterable
 
@@ -26,6 +27,33 @@ TEST_TASK_TYPES = (
     "Придумать вопрос к тексту",
     "Изменить код",
 )
+
+
+def ensure_halo_source_path() -> None:
+    """Expose Halo's repository-root `src` package to this script."""
+    configured = os.environ.get("HALO_REPO_DIR")
+    halo_root = (
+        Path(configured).expanduser().resolve()
+        if configured
+        else Path(__file__).resolve().parent.parent / "halo"
+    )
+    if (halo_root / "src" / "configs" / "classification_config.py").is_file():
+        root = str(halo_root)
+        if root not in sys.path:
+            sys.path.insert(0, root)
+        return
+
+    # A non-editable Halo installation may already expose `src` directly.
+    try:
+        from src.configs import classification_config  # noqa: F401
+    except ModuleNotFoundError as exc:
+        if exc.name and (exc.name == "src" or exc.name.startswith("src.")):
+            raise ModuleNotFoundError(
+                f"Halo source package is unavailable. Expected {halo_root / 'src'}; "
+                "clone whitecircle/halo next to this repository or set "
+                "HALO_REPO_DIR to the Halo clone directory."
+            ) from exc
+        raise
 
 
 def make_test_quotas(test_samples: int) -> dict[str, int]:
@@ -497,6 +525,7 @@ def run(args: argparse.Namespace, clearml_task: Any = None) -> None:
 
     import torch
     from transformers import DataCollatorWithPadding, TrainerCallback
+    ensure_halo_source_path()
     from src.configs.classification_config import ClassificationConfig
     from src.distributed.parallelism_config import ParallelismConfig
     from src.trainers.reward.classification import ClassificationTrainer

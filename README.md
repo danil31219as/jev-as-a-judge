@@ -96,7 +96,9 @@ Halo официально
 [поставляется в контейнере](https://github.com/whitecircle/halo/blob/main/human-docs/installation.md);
 ниже — установка его исходников и зависимостей в отдельное Python-окружение
 для этой плотной модели и параллельного обучения. Клон Halo должен лежать рядом
-с этим репозиторием.
+с этим репозиторием. Скрипт сам добавляет его корень в путь импорта, потому что
+`src` в Halo импортируется как пакет от корня клона. Если клон находится в другом
+месте, задайте `HALO_REPO_DIR=/путь/к/halo` в окружении перед запуском.
 
 Halo 1.0.0 объявляет `gram-newton-schulz` обязательной зависимостью. Она
 подтягивает CUDA 12.9 bindings, несовместимые с `torch==2.11.0+cu130`.
@@ -121,7 +123,7 @@ python -m pip install --no-build-isolation -r requirements.txt
 python -m pip install --no-build-isolation --no-deps \
   'gram-newton-schulz==0.1.6' -e ../halo
 
-python -c 'import torch; from src.trainers.reward.classification import ClassificationTrainer; print(torch.__version__, torch.cuda.device_count())'
+python -c 'import torch, train_judge; train_judge.ensure_halo_source_path(); from src.trainers.reward.classification import ClassificationTrainer; print(torch.__version__, torch.cuda.device_count())'
 python -m unittest discover -s tests -v
 ```
 
@@ -133,7 +135,7 @@ uv pip install --upgrade setuptools wheel hatchling
 uv pip install --no-build-isolation -r requirements.txt
 uv pip install --no-build-isolation --no-deps \
   'gram-newton-schulz==0.1.6' -e ../halo
-python -c 'import torch; from src.trainers.reward.classification import ClassificationTrainer; print(torch.__version__, torch.cuda.device_count())'
+python -c 'import torch, train_judge; train_judge.ensure_halo_source_path(); from src.trainers.reward.classification import ClassificationTrainer; print(torch.__version__, torch.cuda.device_count())'
 ```
 
 В `configs/full_h100.toml` включён ClearML. Настройте подключение один раз
