@@ -551,12 +551,19 @@ def run(args: argparse.Namespace, clearml_task: Any = None) -> None:
 
     if not torch.cuda.is_available() or not torch.cuda.is_bf16_supported():
         raise RuntimeError("Training requires a CUDA GPU with bfloat16 support")
-    model = ToolCallJudge.from_pretrained(
+    model, loading_info = ToolCallJudge.from_pretrained(
         args.model,
         num_labels=args.max_options,
         dtype=torch.bfloat16,
         attn_implementation="sdpa",
+        output_loading_info=True,
     )
+    backbone_issues = {
+        kind: [key for key in loading_info[kind] if key.startswith("model.")]
+        for kind in ("missing_keys", "unexpected_keys")
+    }
+    if any(backbone_issues.values()):
+        raise RuntimeError(f"Qwen backbone weights did not load correctly: {backbone_issues}")
     model.config.judge_tool_close_id = close_id
     model.config.judge_im_start_id = start_id
     model.config.pad_token_id = tokenizer.pad_token_id

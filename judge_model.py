@@ -1,11 +1,11 @@
-"""A Qwen text backbone with one scalar logit at each score tool-call close."""
+"""A Qwen3.5 backbone with one scalar logit at each score tool-call close."""
 
 from __future__ import annotations
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from transformers import Qwen3_5TextForSequenceClassification
+from transformers import Qwen3_5ForConditionalGeneration
 from transformers.modeling_outputs import SequenceClassifierOutput
 
 
@@ -65,7 +65,25 @@ def laya_rlcd_loss(
     return -(advantage * log_density).mean()
 
 
-class ToolCallJudge(Qwen3_5TextForSequenceClassification):
+def normalize_soft_targets(labels: torch.Tensor, valid_options: torch.Tensor) -> torch.Tensor:
+    """Validate assessor distributions, allowing only low-precision rounding."""
+    targets = labels.float()
+    if not torch.isfinite(targets).all() or (targets < 0).any():
+        raise ValueError("Soft labels must be finite nonnegative probabilities")
+    if (targets.masked_select(~valid_options) != 0).any():
+        raise ValueError("Padded candidates must have zero target probability")
+    totals = targets.sum(dim=1, keepdim=True)
+    # Data may be rounded before reaching this forward, even when the collator
+    # later promotes it back to float32. One percent covers BF16 rounding only.
+    if not torch.allclose(totals, torch.ones_like(totals), atol=0.01, rtol=0):
+        raise ValueError(
+            "Each soft-label distribution must sum to one; "
+            f"got sums {totals.flatten().tolist()} with dtype {labels.dtype}"
+        )
+    return targets / totals
+
+
+class ToolCallJudge(Qwen3_5ForConditionalGeneration):
     """Categorical score distribution over a variable count of candidates.
 
     ``config.num_labels`` is the padded output width.  The token-level head is
@@ -127,16 +145,8 @@ class ToolCallJudge(Qwen3_5TextForSequenceClassification):
         if labels is not None:
             if labels.shape != logits.shape:
                 raise ValueError("Soft labels must have shape [batch, num_labels]")
-            targets = labels.to(device=logits.device, dtype=torch.float32)
-            if not torch.isfinite(targets).all() or (targets < 0).any():
-                raise ValueError("Soft labels must be finite nonnegative probabilities")
-            if not torch.allclose(
-                targets.sum(dim=1), torch.ones_like(counts, dtype=torch.float32), atol=1e-5
-            ):
-                raise ValueError("Each soft-label distribution must sum to one")
             padding = torch.arange(width, device=logits.device)[None, :] >= counts[:, None]
-            if (targets.masked_select(padding) != 0).any():
-                raise ValueError("Padded candidates must have zero target probability")
+            targets = normalize_soft_targets(labels.to(device=logits.device), ~padding)
             loss = F.cross_entropy(logits.float(), targets)
             if self.training and getattr(self.config, "judge_rlcd_enabled", False):
                 if option_values is None:
