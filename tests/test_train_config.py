@@ -28,12 +28,17 @@ class TrainingConfigTests(unittest.TestCase):
     def test_repository_configs_parse_and_share_full_preparation(self):
         ce = parse_args(["--config", str(ROOT / "configs/full_h100.toml")])
         rl = parse_args(["--config", str(ROOT / "configs/full_h100_rlcd.toml")])
-        self.assertTrue(ce.full_dataset and rl.full_dataset)
+        hard_rl = parse_args(["--config", str(ROOT / "configs/full_h100_rlcd_hard.toml")])
+        self.assertTrue(ce.full_dataset and rl.full_dataset and hard_rl.full_dataset)
         self.assertEqual(ce.prepared_data_dir, rl.prepared_data_dir)
+        self.assertEqual(ce.prepared_data_dir, hard_rl.prepared_data_dir)
         self.assertEqual((ce.per_device_train_batch_size, ce.gradient_accumulation_steps), (2, 8))
         self.assertFalse(ce.laya_rl)
         self.assertTrue(rl.laya_rl)
+        self.assertTrue(hard_rl.laya_rl and hard_rl.hard_labels)
+        self.assertFalse(ce.hard_labels or rl.hard_labels)
         self.assertNotEqual(ce.output_dir, rl.output_dir)
+        self.assertNotEqual(rl.output_dir, hard_rl.output_dir)
         for name in ("sample.toml", "sample_rlcd.toml"):
             self.assertFalse(parse_args(["--config", str(ROOT / "configs" / name)]).full_dataset)
 

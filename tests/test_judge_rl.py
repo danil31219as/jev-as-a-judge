@@ -34,6 +34,17 @@ class JudgeRlTests(unittest.TestCase):
         self.assertTrue(torch.isfinite(logits.grad).all().item())
         self.assertEqual(logits.grad[0, 2].item(), 0.0)
 
+    @unittest.skipUnless(importlib.util.find_spec("torch"), "PyTorch is not installed")
+    def test_hard_targets_resolve_vote_ties_by_score_not_tool_call_order(self):
+        import torch
+        from judge_model import majority_one_hot_targets
+
+        targets = torch.tensor([[0.5, 0.5, 0.0, 0.0], [0.1, 0.7, 0.2, 0.0]])
+        valid = torch.tensor([[True, True, True, False], [True, True, True, False]])
+        values = torch.tensor([[2, 0, 1, -1], [2, 1, 0, -1]])
+        hard = majority_one_hot_targets(targets, valid, values)
+        self.assertEqual(hard.tolist(), [[0.0, 1.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0]])
+
 
 if __name__ == "__main__":
     unittest.main()

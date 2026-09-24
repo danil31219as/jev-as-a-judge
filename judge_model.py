@@ -83,12 +83,29 @@ def normalize_soft_targets(labels: torch.Tensor, valid_options: torch.Tensor) ->
     return targets / totals
 
 
+def majority_one_hot_targets(
+    targets: torch.Tensor, valid_options: torch.Tensor, option_values: torch.Tensor
+) -> torch.Tensor:
+    """Choose the assessors' modal score, breaking vote ties by numeric score."""
+    if option_values.shape != targets.shape:
+        raise ValueError("Hard labels need option_values with shape [batch, num_labels]")
+    values = option_values.to(device=targets.device)
+    if ((values < 0) & valid_options).any():
+        raise ValueError("Valid candidates need nonnegative numeric scores")
+    most_votes = targets.masked_fill(~valid_options, -1).amax(dim=-1, keepdim=True)
+    tied_values = values.masked_fill(
+        ~(valid_options & (targets == most_votes)), torch.iinfo(values.dtype).max
+    )
+    winners = tied_values.argmin(dim=-1, keepdim=True)
+    return torch.zeros_like(targets).scatter_(1, winners, 1.0)
+
+
 class ToolCallJudge(Qwen3_5ForConditionalGeneration):
     """Categorical score distribution over a variable count of candidates.
 
     ``config.num_labels`` is the padded output width.  The token-level head is
     always ``nn.Linear(hidden_size, 1)``; only closing tool-call positions are
-    selected for the softmax and soft-target cross-entropy.
+    selected for the softmax and cross-entropy with soft or hard targets.
     """
 
     def __init__(self, config):
@@ -147,6 +164,10 @@ class ToolCallJudge(Qwen3_5ForConditionalGeneration):
                 raise ValueError("Soft labels must have shape [batch, num_labels]")
             padding = torch.arange(width, device=logits.device)[None, :] >= counts[:, None]
             targets = normalize_soft_targets(labels.to(device=logits.device), ~padding)
+            if getattr(self.config, "judge_hard_labels", False):
+                if option_values is None:
+                    raise ValueError("Hard-label training and evaluation require option_values")
+                targets = majority_one_hot_targets(targets, ~padding, option_values)
             loss = F.cross_entropy(logits.float(), targets)
             if self.training and getattr(self.config, "judge_rlcd_enabled", False):
                 if option_values is None:

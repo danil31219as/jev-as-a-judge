@@ -48,18 +48,25 @@ train. Лимиты `--samples` и `--test-samples` в этом режиме н�
 использовать это разбиение повторно с другим `--output-dir`, например для
 отдельного запуска RLCD.
 
-После обучения `test_metrics.json` содержит **MAE**, **RMSE** и **macro-F1**:
+После каждой эпохи тренер считает на test **MAE**, **RMSE** и **macro-F1**
+и записывает `eval_mae`, `eval_rmse`, `eval_f1_macro` в логи. После обучения
+последние значения сохраняются в `test_metrics.json` как `test_*`:
 все три метрики сравнивают оценку `argmax` модели с оценкой, за которую
 проголосовало больше всего ассесоров. При равенстве голосов или логитов
 выбирается меньшая оценка.
-Тест используется только для итоговой оценки, не для обновления весов.
+Тест используется только для оценки, не для обновления весов.
 
-Опция `--laya-rl` добавляет к soft-target CE алгоритм RLCD из
+Опция `--laya-rl` добавляет к CE алгоритм RLCD из
 [Laya](https://github.com/NandhaKishorM/laya/blob/main/notebooks/laya_finetune_typed_decisions_2xT4_kaggle.ipynb): четыре
 гауссовых возмущения логитов на пример, награда из log score, spherical score
 и ordinal RPS, групповое центрирование преимущества и policy gradient.
 Стандартное отклонение шума снижается от 0.4 до 0.1 по эпохам. Для RPS
 варианты упорядочиваются по числовой оценке, независимо от порядка вызовов.
+В `configs/full_h100_rlcd_hard.toml` задано `hard_labels = true`: и CE, и
+RLCD используют one-hot цель из оценки большинства ассесоров. При равенстве
+голосов берётся меньшая числовая оценка. Подготовленные данные не изменяются;
+преобразование меток выполняется при расчёте loss. Метрики всегда сравнивают
+argmax модели с оценкой большинства.
 
 Авторы POLLUX [не рекомендуют обучаться на нём](https://huggingface.co/datasets/ai-forever/POLLUX/blob/main/README.md#out-of-scope-use),
 чтобы сохранить независимость бенчмарка. Этот запуск выполняет ваш запрос как
@@ -72,7 +79,8 @@ train. Лимиты `--samples` и `--test-samples` в этом режиме н�
 `configs/`. Программа читает их через `--config`; `--prepare-only` запускает
 только подготовку данных. `configs/sample.toml` и `configs/sample_rlcd.toml`
 задают пробный запуск на 100 строках. Для всего датасета и двух H100 служат
-`configs/full_h100.toml` и `configs/full_h100_rlcd.toml`. Изменяйте гиперпараметры
+`configs/full_h100.toml`, `configs/full_h100_rlcd.toml` и
+`configs/full_h100_rlcd_hard.toml`. Изменяйте гиперпараметры
 в этих файлах. Например, при нехватке памяти установите
 `per_device_train_batch_size = 1` и `gradient_accumulation_steps = 16`.
 
@@ -148,7 +156,7 @@ python -c 'import torch, train_judge; train_judge.ensure_halo_source_path(); fro
 командой `clearml-init`; если оно не нужно, задайте `clearml = false` в обоих
 полных конфигах и пропустите `clearml-init`. Режим `--prepare-only` не создаёт
 задачу ClearML. При обучении туда отправляются только текстовые логи и числовые
-метрики тренера (включая loss и learning rate), а после оценки — тестовые
+метрики тренера (включая loss и learning rate), а после каждой эпохи — тестовые
 MAE/RMSE/macro-F1. Файлы данных, `selection.json`, TOML-конфиг,
 `test_metrics.json` и чекпоинты остаются локально.
 
@@ -183,6 +191,14 @@ torchrun --standalone --nproc_per_node=2 train_judge.py \
 cat checkpoints/pollux-full-rlcd/test_metrics.json
 ```
 
+RLCD с one-hot меткой по большинству ассесоров на тех же данных:
+
+```bash
+torchrun --standalone --nproc_per_node=2 train_judge.py \
+  --config configs/full_h100_rlcd_hard.toml
+cat checkpoints/pollux-full-rlcd-hard/test_metrics.json
+```
+
 Для пробного запуска на 100 строках используйте:
 
 ```bash
@@ -202,11 +218,19 @@ python inspect_random_example.py
 Результаты записываются в `examples/pollux_random_example.json`,
 `examples/pollux_decoded_input.txt` и `examples/pollux_inspection.json`.
 
-После обучения загружайте `ToolCallJudge.from_pretrained(...)` из
-`judge_model.py`, применяйте **тот же** `make_messages` и chat template, а
-вероятности переводите из позиций логитов обратно в числовые оценки через
-`option_values`. В режиме 100 примеров эта связь находится в строках
-`selection.json`, а в полном режиме — в каждой записи `prepared/*.jsonl`.
+Для инференса одного примера через Transformers:
+
+```bash
+python infer_one.py \
+  --checkpoint checkpoints/pollux-full-ce/final \
+  --example examples/pollux_random_example.json
+```
+
+`--example` принимает сохранённую строку POLLUX либо JSON-объект с полями
+`instruction`, `answer`, `criteria_name`, `criteria_description`, `rubrics` и,
+если есть, `reference_answer`. Скрипт использует тот же `make_messages` и chat
+template; `annotations` для инференса не нужны. Вывод содержит выбранную оценку
+и вероятности каждого варианта.
 
 Источники реализации: [шаблон и токенизатор Qwen](https://huggingface.co/Qwen/Qwen3.5-0.8B/blob/main/tokenizer_config.json),
 [классификационный тренер Halo](https://github.com/whitecircle/halo/blob/main/src/trainers/reward/classification.py),

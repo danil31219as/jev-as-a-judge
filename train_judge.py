@@ -299,6 +299,7 @@ CONFIG_TYPES: dict[str, type] = {
     "gradient_checkpointing": bool,
     "logging_steps": int,
     "save_total_limit": int,
+    "hard_labels": bool,
     "laya_rl": bool,
     "rl_group_size": int,
     "rl_sigma_start": float,
@@ -363,7 +364,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         default=True)
     parser.add_argument("--logging-steps", type=int, default=10)
     parser.add_argument("--save-total-limit", type=int, default=2)
-    parser.add_argument("--laya-rl", action="store_true", help="add Laya-style RLCD to soft CE")
+    parser.add_argument("--hard-labels", action=argparse.BooleanOptionalAction,
+                        default=False, help="train on the assessors' majority score")
+    parser.add_argument("--laya-rl", action="store_true", help="add Laya-style RLCD to CE")
     parser.add_argument("--rl-group-size", type=int, default=4)
     parser.add_argument("--rl-sigma-start", type=float, default=0.4)
     parser.add_argument("--rl-sigma-end", type=float, default=0.1)
@@ -445,7 +448,7 @@ def report_clearml_training_logs(logger: Any, logs: dict[str, Any], step: int) -
     if not values:
         return
     for name, value in values.items():
-        group = "test" if name.startswith("test_") else "train"
+        group = "test" if name.startswith(("test_", "eval_")) else "train"
         logger.report_scalar(title=group, series=name, value=value, iteration=step)
     logger.report_text(
         f"step {step}: " + ", ".join(f"{name}={value:g}" for name, value in values.items()),
@@ -570,6 +573,7 @@ def run(args: argparse.Namespace, clearml_task: Any = None) -> None:
     model.config.get_text_config().pad_token_id = tokenizer.pad_token_id
     model.config.use_cache = False
     model.config.judge_rlcd_enabled = args.laya_rl
+    model.config.judge_hard_labels = args.hard_labels
     model.config.judge_rlcd_group_size = args.rl_group_size
     model.config.judge_rlcd_sigma = args.rl_sigma_start
 
@@ -588,7 +592,7 @@ def run(args: argparse.Namespace, clearml_task: Any = None) -> None:
         logging_steps=args.logging_steps,
         save_strategy="epoch",
         save_total_limit=args.save_total_limit,
-        eval_strategy="no",
+        eval_strategy="epoch",
         report_to="none",
         remove_unused_columns=False,
         seed=args.seed,
@@ -605,6 +609,21 @@ def run(args: argparse.Namespace, clearml_task: Any = None) -> None:
         label_names_list=[str(i) for i in range(args.max_options)],
         parallelism_config=ParallelismConfig(),
     )
+
+    class EpochTestMetricsCallback(TrainerCallback):
+        latest: dict[str, Any] | None = None
+
+        def on_evaluate(self, _args, state, control, metrics=None, **_kwargs):
+            if metrics:
+                self.latest = dict(metrics)
+                if state.is_world_process_zero:
+                    shown = {name: value for name, value in metrics.items()
+                             if name in ("eval_mae", "eval_rmse", "eval_f1_macro")}
+                    print(f"Test metrics after epoch {state.epoch}: {shown}", flush=True)
+            return control
+
+    epoch_test_metrics = EpochTestMetricsCallback()
+    trainer.add_callback(epoch_test_metrics)
 
     if clearml_task is not None:
         class ClearMLTrainingCallback(TrainerCallback):
@@ -629,7 +648,13 @@ def run(args: argparse.Namespace, clearml_task: Any = None) -> None:
         trainer.add_callback(LayaSigmaCallback())
 
     trainer.train()
-    metrics = trainer.evaluate(metric_key_prefix="test")
+    if epoch_test_metrics.latest is None:
+        raise RuntimeError("Training finished without epoch-end test evaluation")
+    metrics = {
+        "test_" + key.removeprefix("eval_"): value
+        for key, value in epoch_test_metrics.latest.items()
+        if key.startswith("eval_")
+    }
     final_dir = output_dir / "final"
     trainer.save_model(str(final_dir))
     if trainer.is_world_process_zero():
