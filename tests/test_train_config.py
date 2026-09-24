@@ -30,6 +30,9 @@ class TrainingConfigTests(unittest.TestCase):
         rl = parse_args(["--config", str(ROOT / "configs/full_h100_rlcd.toml")])
         hard_rl = parse_args(["--config", str(ROOT / "configs/full_h100_rlcd_hard.toml")])
         four_b = parse_args(["--config", str(ROOT / "configs/full_h100_4b.toml")])
+        four_b_hard_rl = parse_args([
+            "--config", str(ROOT / "configs/full_h100_4b_rlcd_hard.toml")
+        ])
         self.assertTrue(ce.full_dataset and rl.full_dataset and hard_rl.full_dataset)
         self.assertTrue(four_b.full_dataset)
         self.assertEqual(four_b.model, "Qwen/Qwen3.5-4B")
@@ -38,6 +41,13 @@ class TrainingConfigTests(unittest.TestCase):
         self.assertEqual((four_b.per_device_train_batch_size,
                           four_b.gradient_accumulation_steps), (1, 16))
         self.assertFalse(four_b.laya_rl or four_b.hard_labels)
+        self.assertTrue(four_b_hard_rl.full_dataset)
+        self.assertEqual(four_b_hard_rl.model, four_b.model)
+        self.assertEqual(four_b_hard_rl.prepared_data_dir, four_b.prepared_data_dir)
+        self.assertNotEqual(four_b_hard_rl.output_dir, four_b.output_dir)
+        self.assertTrue(four_b_hard_rl.hard_labels and four_b_hard_rl.laya_rl)
+        self.assertEqual((four_b_hard_rl.per_device_train_batch_size,
+                          four_b_hard_rl.gradient_accumulation_steps), (1, 16))
         self.assertEqual(ce.prepared_data_dir, rl.prepared_data_dir)
         self.assertEqual(ce.prepared_data_dir, hard_rl.prepared_data_dir)
         self.assertEqual((ce.per_device_train_batch_size, ce.gradient_accumulation_steps), (2, 8))

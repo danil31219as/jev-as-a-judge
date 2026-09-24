@@ -1,0 +1,29 @@
+# Qwen3.5-4B: majority-vote one-hot CE + RLCD on two H100.
+model = "Qwen/Qwen3.5-4B"
+source_dir = "checkpoints/pollux-source"
+full_dataset = true
+prepared_data_dir = "checkpoints/pollux-full-4b-data"
+output_dir = "checkpoints/pollux-full-4b-rlcd-hard"
+seed = 42
+max_length = 4096
+max_options = 5
+
+# Effective batch size: 2 GPUs × 1 example × 16 accumulation steps = 32.
+epochs = 3.0
+learning_rate = 1e-5
+per_device_train_batch_size = 1
+per_device_eval_batch_size = 1
+gradient_accumulation_steps = 16
+dataloader_num_workers = 4
+gradient_checkpointing = true
+logging_steps = 10
+save_total_limit = 2
+
+hard_labels = true
+laya_rl = true
+rl_group_size = 4
+rl_sigma_start = 0.4
+rl_sigma_end = 0.1
+clearml = true
+clearml_project = "jev-as-a-judge"
+clearml_task_name = "Qwen3.5-4B POLLUX full majority RLCD"

@@ -84,8 +84,9 @@ argmax модели с оценкой большинства.
 только подготовку данных. `configs/sample.toml` и `configs/sample_rlcd.toml`
 задают пробный запуск на 100 строках. Для всего датасета и двух H100 служат
 `configs/full_h100.toml`, `configs/full_h100_rlcd.toml` и
-`configs/full_h100_rlcd_hard.toml`. Для Qwen3.5-4B есть отдельный
-`configs/full_h100_4b.toml`. Изменяйте гиперпараметры
+`configs/full_h100_rlcd_hard.toml`. Для Qwen3.5-4B есть конфиги
+`configs/full_h100_4b.toml` и `configs/full_h100_4b_rlcd_hard.toml`.
+Изменяйте гиперпараметры
 в этих файлах. Например, при нехватке памяти установите
 `per_device_train_batch_size = 1` и `gradient_accumulation_steps = 16`.
 
@@ -206,8 +207,9 @@ cat checkpoints/pollux-full-rlcd-hard/test_metrics.json
 
 ### Qwen3.5-4B на двух H100
 
-Конфиг `configs/full_h100_4b.toml` запускает CE с распределением голосов
-ассесоров. Он сохраняет ту же схему train/test, но использует отдельную
+Конфиг `configs/full_h100_4b_rlcd_hard.toml` запускает CE и RLCD с one-hot
+оценкой большинства ассесоров. Конфиг `configs/full_h100_4b.toml` оставлен
+для CE с распределением голосов. Оба сохраняют ту же схему train/test и используют отдельную
 подготовку в `checkpoints/pollux-full-4b-data`: токены строятся шаблоном и
 токенизатором 4B, а сохранённый набор проверяется по имени модели. Исходные
 Parquet-файлы в `checkpoints/pollux-source` повторно скачивать не нужно.
@@ -216,10 +218,10 @@ batch на двух GPU — 32. Оценка test и сохранение чек
 каждой эпохи.
 
 ```bash
-python train_judge.py --config configs/full_h100_4b.toml --prepare-only
+python train_judge.py --config configs/full_h100_4b_rlcd_hard.toml --prepare-only
 torchrun --standalone --nproc_per_node=2 train_judge.py \
-  --config configs/full_h100_4b.toml
-cat checkpoints/pollux-full-4b-ce/test_metrics.json
+  --config configs/full_h100_4b_rlcd_hard.toml
+cat checkpoints/pollux-full-4b-rlcd-hard/test_metrics.json
 ```
 
 Для пробного запуска на 100 строках используйте:
