@@ -617,8 +617,12 @@ def run(args: argparse.Namespace, clearml_task: Any = None) -> None:
             if metrics:
                 self.latest = dict(metrics)
                 if state.is_world_process_zero:
-                    shown = {name: value for name, value in metrics.items()
-                             if name in ("eval_mae", "eval_rmse", "eval_f1_macro")}
+                    shown = {
+                        name: value for name, value in metrics.items()
+                        if name in ("eval_mae", "eval_rmse", "eval_f1_macro",
+                                    "eval_predicted_unique_scores")
+                        or name.startswith("eval_predicted_score_")
+                    }
                     print(f"Test metrics after epoch {state.epoch}: {shown}", flush=True)
             return control
 

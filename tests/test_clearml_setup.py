@@ -59,10 +59,13 @@ class ClearMlSetupTests(unittest.TestCase):
         texts = []
         report_clearml_training_logs(logger, {
             "loss": 0.5, "learning_rate": 1e-5, "eval_mae": 0.25,
+            "eval_predicted_unique_scores": 3,
             "selection": "prepared/train.jsonl", "bad": float("nan"),
         }, 12)
-        self.assertEqual([entry["series"] for entry in scalars], ["loss", "learning_rate", "eval_mae"])
-        self.assertEqual([entry["title"] for entry in scalars], ["train", "train", "test"])
+        self.assertEqual([entry["series"] for entry in scalars],
+                         ["loss", "learning_rate", "eval_mae", "eval_predicted_unique_scores"])
+        self.assertEqual([entry["title"] for entry in scalars],
+                         ["train", "train", "test", "test"])
         self.assertEqual(len(texts), 1)
         self.assertFalse(texts[0][1]["print_console"])
 

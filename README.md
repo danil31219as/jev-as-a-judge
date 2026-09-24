@@ -54,6 +54,10 @@ train. Лимиты `--samples` и `--test-samples` в этом режиме н�
 все три метрики сравнивают оценку `argmax` модели с оценкой, за которую
 проголосовало больше всего ассесоров. При равенстве голосов или логитов
 выбирается меньшая оценка.
+Также логируются `eval_predicted_unique_scores` (сколько разных оценок
+предсказано через argmax) и `eval_predicted_score_N_count` (сколько раз
+предсказана каждая оценка N, включая нулевые значения). Они тоже сохраняются
+в `test_metrics.json` с префиксом `test_`.
 Тест используется только для оценки, не для обновления весов.
 
 Опция `--laya-rl` добавляет к CE алгоритм RLCD из
@@ -231,6 +235,9 @@ python infer_one.py \
 если есть, `reference_answer`. Скрипт использует тот же `make_messages` и chat
 template; `annotations` для инференса не нужны. Вывод содержит выбранную оценку
 и вероятности каждого варианта.
+В `examples/pollux_test_score_2.json` лежит короткий пример из test:
+тип задачи «Написать художественный текст», три оценки ассесоров равны 2.
+Чтобы проверить его, передайте этот путь в `--example`.
 
 Источники реализации: [шаблон и токенизатор Qwen](https://huggingface.co/Qwen/Qwen3.5-0.8B/blob/main/tokenizer_config.json),
 [классификационный тренер Halo](https://github.com/whitecircle/halo/blob/main/src/trainers/reward/classification.py),

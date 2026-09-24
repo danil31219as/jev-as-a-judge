@@ -5,6 +5,7 @@ import tempfile
 import unittest
 
 from judge_data import annotation_score_counts, make_messages, parse_rubric, prepare_row
+from pollux_source import DATASET_REVISION
 from train_judge import (
     TEST_TASK_TYPES, full_data_paths, load_full_selection, make_test_quotas,
     prepare_full_examples, select_examples,
@@ -39,6 +40,22 @@ class TinyChatTokenizer:
 
 
 class JudgeDataTests(unittest.TestCase):
+    def test_saved_score_two_example_belongs_to_held_out_test(self):
+        path = Path(__file__).resolve().parents[1] / "examples/pollux_test_score_2.json"
+        saved = json.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual(saved["split"], "test")
+        self.assertEqual(saved["dataset_revision"], DATASET_REVISION)
+        row = saved["row"]
+        self.assertIn(row["task_type"], TEST_TASK_TYPES)
+        prepared = prepare_row(
+            row, TinyChatTokenizer(), seed=42, max_length=4096,
+            max_options=5, shuffle_options=False,
+        )
+        self.assertIsNotNone(prepared)
+        example, metadata = prepared
+        self.assertEqual(metadata["annotation_counts"], {0: 0, 1: 0, 2: 3})
+        self.assertEqual(example["labels"], [0.0, 0.0, 1.0, 0.0, 0.0])
+
     def test_parse_variable_rubric_and_reject_gap(self):
         self.assertEqual(
             parse_rubric("0: Нет ответа. 1: Ответ неполный. 2: Ответ верный."),

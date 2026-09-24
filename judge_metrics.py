@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import math
+from collections import Counter
 from typing import Any, Sequence
 
 
 def score_metrics(
     logits: Sequence[Sequence[float]], targets: Sequence[Sequence[float]]
-) -> dict[str, float]:
+) -> dict[str, float | int]:
     """Compare argmax scores with the assessors' majority score."""
     if len(logits) != len(targets) or not len(logits):
         raise ValueError("Metrics need equally sized, nonempty predictions and targets")
@@ -46,14 +47,20 @@ def score_metrics(
         denominator = 2 * true_positive + false_positive + false_negative
         class_f1.append(2 * true_positive / denominator if denominator else 0.0)
 
+    prediction_counts = Counter(predicted_classes)
     return {
         "mae": sum(absolute_errors) / len(absolute_errors),
         "rmse": math.sqrt(sum(squared_errors) / len(squared_errors)),
         "f1_macro": sum(class_f1) / len(class_f1),
+        "predicted_unique_scores": len(prediction_counts),
+        **{
+            f"predicted_score_{score}_count": prediction_counts[score]
+            for score in range(len(logits[0]))
+        },
     }
 
 
-def compute_judge_metrics(eval_pred: Any) -> dict[str, float]:
+def compute_judge_metrics(eval_pred: Any) -> dict[str, float | int]:
     """Halo/Hugging Face Trainer callback; test calls are ordered 0..K-1."""
     predictions = eval_pred.predictions
     if isinstance(predictions, tuple):

@@ -15,6 +15,10 @@ class JudgeMetricTests(unittest.TestCase):
         self.assertEqual(metrics["mae"], 0.0)
         self.assertEqual(metrics["rmse"], 0.0)
         self.assertEqual(metrics["f1_macro"], 1.0)
+        self.assertEqual(metrics["predicted_unique_scores"], 2)
+        self.assertEqual(metrics["predicted_score_0_count"], 1)
+        self.assertEqual(metrics["predicted_score_1_count"], 1)
+        self.assertEqual(metrics["predicted_score_2_count"], 0)
 
     def test_mae_and_rmse_compare_argmax_to_majority(self):
         metrics = score_metrics(
@@ -24,6 +28,7 @@ class JudgeMetricTests(unittest.TestCase):
         self.assertEqual(metrics["mae"], 1.5)
         self.assertAlmostEqual(metrics["rmse"], math.sqrt(2.5))
         self.assertEqual(metrics["f1_macro"], 0.0)
+        self.assertEqual(metrics["predicted_unique_scores"], 2)
 
     def test_macro_f1_counts_all_observed_classes(self):
         metrics = score_metrics([[0.0, 2.0], [2.0, 0.0]], [[1.0, 0.0], [1.0, 0.0]])
